@@ -1,18 +1,18 @@
-name: "🚀 تحويل ZIP إلى APK"
+name: "🚀 تحويل أي ZIP إلى APK"
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "*.zip"
-      - ".github/workflows/build.yml"
+      - ".github/workflows/build-from-zip.yml"
 
 permissions:
   contents: read
 
 jobs:
   build-apk:
-
+    name: "🔨 Build APK"
     runs-on: ubuntu-latest
 
     steps:
@@ -31,7 +31,7 @@ jobs:
         with:
           node-version: "22"
 
-      - name: "📦 البحث عن ZIP"
+      - name: "📦 البحث عن ملف ZIP"
         shell: bash
         run: |
           set -e
@@ -39,108 +39,171 @@ jobs:
           ZIP=$(find . -maxdepth 1 -type f -iname "*.zip" | head -1)
 
           if [ -z "$ZIP" ]; then
-            echo "❌ لم يتم العثور على ملف ZIP"
+            echo "❌ لم يتم العثور على أي ملف ZIP"
             exit 1
           fi
 
           echo "ZIP_FILE=$ZIP" >> "$GITHUB_ENV"
 
-          echo "✅ الملف:"
+          echo "✅ تم العثور على:"
           echo "$ZIP"
 
-      - name: "📂 فك الضغط"
+      - name: "📂 فك جميع ملفات ZIP"
         shell: bash
         run: |
           set -e
 
-          rm -rf project
-          mkdir project
+          rm -rf extracted
+          mkdir -p extracted
 
-          unzip -q "$ZIP_FILE" -d project
+          unzip -q "$ZIP_FILE" -d extracted
 
-          echo "📁 محتويات ZIP:"
-          find project -maxdepth 3 -type f | head -100
+          echo "🔍 البحث عن ملفات ZIP داخل ZIP..."
+
+          ROUND=1
+
+          while true; do
+
+            NESTED=$(find extracted \
+              -type f \
+              -iname "*.zip" \
+              | head -1)
+
+            if [ -z "$NESTED" ]; then
+              break
+            fi
+
+            echo "📦 ZIP داخلي:"
+            echo "$NESTED"
+
+            DIR=$(dirname "$NESTED")
+
+            unzip -q "$NESTED" -d "$DIR"
+
+            rm -f "$NESTED"
+
+            ROUND=$((ROUND + 1))
+
+            if [ "$ROUND" -gt 10 ]; then
+              echo "❌ يوجد أكثر من 10 مستويات ZIP متداخلة"
+              exit 1
+            fi
+
+          done
+
+          echo "✅ انتهى فك الضغط"
+
+          echo "📁 الملفات الموجودة:"
+          find extracted -maxdepth 5 -type f | head -200
 
       - name: "🔎 البحث عن index.html"
         shell: bash
         run: |
           set -e
 
-          INDEX=$(find project -type f -name "index.html" | head -1)
+          INDEX=$(find extracted \
+            -type f \
+            -iname "index.html" \
+            | head -1)
 
           if [ -z "$INDEX" ]; then
             echo "❌ لم يتم العثور على index.html"
-            echo "هذا الملف يجب أن يكون موجودًا داخل المشروع."
+            echo ""
+            echo "الـZIP لا يحتوي على مشروع Web صالح."
+            echo "يجب أن يحتوي على index.html"
             exit 1
           fi
 
-          WEB_DIR=$(dirname "$INDEX")
+          echo "INDEX_FILE=$INDEX" >> "$GITHUB_ENV"
 
-          echo "WEB_DIR=$WEB_DIR" >> "$GITHUB_ENV"
+          echo "✅ تم العثور على:"
+          echo "$INDEX"
 
-          echo "✅ تم العثور على الموقع:"
-          echo "$WEB_DIR"
-
-      - name: "📦 إنشاء مشروع Capacitor"
+      - name: "🌐 تجهيز ملفات اللعبة"
         shell: bash
         run: |
           set -e
 
-          cd "$WEB_DIR"
+          rm -rf app
+          mkdir -p app/www
 
-          if [ ! -f package.json ]; then
+          WEB_DIR=$(dirname "$INDEX_FILE")
 
-            cat > package.json <<'EOF'
+          echo "📁 مجلد الموقع:"
+          echo "$WEB_DIR"
+
+          cp -a "$WEB_DIR"/. app/www/
+
+          echo "✅ تم تجهيز ملفات الموقع"
+
+          echo "📄 الملفات:"
+          find app/www -maxdepth 3 -type f | head -200
+
+      - name: "📦 إنشاء package.json"
+        shell: bash
+        run: |
+          set -e
+
+          cd app
+
+          cat > package.json <<'EOF'
           {
             "name": "zip-to-apk",
             "version": "1.0.0",
-            "private": true
+            "private": true,
+            "scripts": {
+              "build": "echo build"
+            }
           }
           EOF
 
-          fi
+      - name: "⚡ تثبيت Capacitor"
+        shell: bash
+        run: |
+          set -e
 
-          npm install @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8
+          cd app
+
+          npm install \
+            @capacitor/core@8 \
+            @capacitor/cli@8 \
+            @capacitor/android@8
 
       - name: "⚙️ إعداد Capacitor"
         shell: bash
         run: |
           set -e
 
-          cd "$WEB_DIR"
+          cd app
 
-          if [ ! -f capacitor.config.json ]; then
-
-            cat > capacitor.config.json <<'EOF'
+          cat > capacitor.config.json <<'EOF'
           {
             "appId": "com.ahmedgames.app",
             "appName": "Ahmed Games",
-            "webDir": ".",
+            "webDir": "www",
             "server": {
               "androidScheme": "https"
             }
           }
           EOF
 
-          fi
+          echo "✅ Capacitor جاهز"
 
-      - name: "🤖 إنشاء Android"
+      - name: "🤖 إنشاء مشروع Android"
         shell: bash
         run: |
           set -e
 
-          cd "$WEB_DIR"
+          cd app
 
-          if [ ! -d android ]; then
-            npx cap add android
-          fi
+          npx cap add android
 
-      - name: "🔄 تحديث Android"
+      - name: "🔄 مزامنة Android"
         shell: bash
         run: |
           set -e
 
-          cd "$WEB_DIR"
+          cd app
 
           npx cap sync android
 
@@ -159,49 +222,55 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+      - name: "🔐 إعطاء صلاحية Gradle"
+        shell: bash
+        run: |
+          set -e
+
+          cd app/android
+
+          chmod +x gradlew
+
       - name: "🔨 بناء APK"
         shell: bash
         run: |
           set -e
 
-          cd "$WEB_DIR/android"
-
-          chmod +x gradlew
+          cd app/android
 
           ./gradlew assembleDebug \
             --no-daemon \
             --stacktrace
 
-      - name: "📤 تجهيز APK"
+      - name: "📤 تجهيز APK النهائي"
         shell: bash
         run: |
           set -e
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p output
 
-          APK=$(find "$WEB_DIR/android" \
+          APK=$(find app/android \
             -type f \
             -name "*.apk" \
             | head -1)
 
           if [ -z "$APK" ]; then
-            echo "❌ لم يتم إنشاء APK"
+            echo "❌ APK لم يتم إنشاؤه"
             exit 1
           fi
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/output/app-debug.apk"
+          cp "$APK" output/Ahmed-Games.apk
 
           echo "================================"
-          echo "✅ APK جاهز"
+          echo "🎉 APK جاهز"
           echo "================================"
 
-          ls -lh "$GITHUB_WORKSPACE/output/app-debug.apk"
+          ls -lh output/Ahmed-Games.apk
 
       - name: "⬆️ رفع APK"
         uses: actions/upload-artifact@v4
         with:
           name: APK-جاهز
-          path: output/app-debug.apk
+          path: output/Ahmed-Games.apk
           if-no-files-found: error
           retention-days: 30
